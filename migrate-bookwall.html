@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>書牆資料遷移工具</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #f5f0e8; font-family: 'Noto Serif TC', sans-serif; padding: 32px 20px; }
+h1 { font-size: 1.2rem; color: #4a3f35; margin-bottom: 8px; }
+p { font-size: 0.82rem; color: #7a6a5a; margin-bottom: 24px; line-height: 1.8; }
+.card { background: white; border-radius: 16px; padding: 24px; margin-bottom: 16px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+button {
+  background: #7a6a5a; color: white; border: none; border-radius: 10px;
+  padding: 14px 28px; font-size: 0.9rem; cursor: pointer; width: 100%;
+  transition: background 0.2s;
+}
+button:hover { background: #5a4f45; }
+button:disabled { background: #b8a99a; cursor: not-allowed; }
+#log {
+  background: #1a1a1a; color: #a0e0a0; border-radius: 10px;
+  padding: 16px; font-family: monospace; font-size: 0.75rem;
+  line-height: 1.8; min-height: 200px; max-height: 400px;
+  overflow-y: auto; white-space: pre-wrap; margin-top: 16px;
+  display: none;
+}
+.progress-bar { background: #ede8df; border-radius: 8px; height: 10px; margin: 12px 0; overflow: hidden; }
+.progress-fill { background: #7a6a5a; height: 100%; width: 0%; transition: width 0.3s; border-radius: 8px; }
+.stat { font-size: 0.85rem; color: #5a4f45; margin: 4px 0; }
+.done { color: #2a7a2a; font-weight: bold; font-size: 1rem; margin-top: 12px; }
+.error { color: #c0392b; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>📚 書牆資料遷移工具</h1>
+  <p>這個工具會把 Firebase 資料庫裡的 base64 圖片<br>自動搬到 Firebase Storage，大幅降低流量費用。<br><br>⚠️ 請保持畫面開啟直到完成，不要關閉。</p>
+  <div class="progress-bar"><div class="progress-fill" id="progress"></div></div>
+  <div class="stat" id="stat">準備中...</div>
+  <button id="startBtn" onclick="startMigrate()">開始遷移</button>
+  <div id="log"></div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getDatabase, ref, get, update } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyB8-o_01wWX17DFmJMKLY8cPc7pAuIL8rs",
+  authDomain: "book-wall-81a7e.firebaseapp.com",
+  databaseURL: "https://book-wall-81a7e-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "book-wall-81a7e",
+  storageBucket: "book-wall-81a7e.firebasestorage.app",
+  messagingSenderId: "294086548982",
+  appId: "1:294086548982:web:b64a54bcad483ce68b7bd7"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+const storage = getStorage(app);
+
+const log = document.getElementById('log');
+const stat = document.getElementById('stat');
+const progress = document.getElementById('progress');
+
+function addLog(msg, type='') {
+  log.style.display = 'block';
+  const color = type === 'error' ? '#ff6b6b' : type === 'skip' ? '#a0a0e0' : type === 'done' ? '#6bffb0' : '#a0e0a0';
+  log.innerHTML += `<span style="color:${color}">${msg}</span>\n`;
+  log.scrollTop = log.scrollHeight;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+window.startMigrate = async function() {
+  const btn = document.getElementById('startBtn');
+  btn.disabled = true;
+  btn.textContent = '遷移中...';
+
+  try {
+    addLog('📡 正在讀取資料庫...');
+    const snapshot = await get(ref(db, 'bookwall/may'));
+    const data = snapshot.val();
+
+    if (!data) { addLog('❌ 找不到資料', 'error'); return; }
+
+    const entries = Object.entries(data);
+    const toMigrate = entries.filter(([, v]) => v.cover && v.cover.startsWith('data:'));
+    const alreadyDone = entries.length - toMigrate.length;
+
+    addLog(`✅ 找到 ${entries.length} 本書`);
+    addLog(`⏭️ 已遷移 ${alreadyDone} 本（跳過）`, 'skip');
+    addLog(`📦 需要遷移 ${toMigrate.length} 本\n`);
+    stat.textContent = `需要遷移 ${toMigrate.length} 本`;
+
+    if (toMigrate.length === 0) {
+      addLog('🎉 全部已完成！不需要遷移。', 'done');
+      stat.textContent = '全部完成！';
+      progress.style.width = '100%';
+      btn.textContent = '已完成';
+      return;
+    }
+
+    let done = 0, failed = 0;
+
+    for (const [key, book] of toMigrate) {
+      try {
+        addLog(`📖 遷移：${book.title || key}`);
+        const fileName = `bookwall/may/migrated_${key}.jpg`;
+        const imgRef = storageRef(storage, fileName);
+
+        // 壓縮 base64 圖片後上傳
+        const compressed = await compressBase64(book.cover);
+        await uploadString(imgRef, compressed, 'data_url');
+        const url = await getDownloadURL(imgRef);
+
+        // 更新資料庫，把 base64 換成 URL
+        await update(ref(db, `bookwall/may/${key}`), { cover: url });
+
+        done++;
+        const pct = Math.round((done / toMigrate.length) * 100);
+        progress.style.width = pct + '%';
+        stat.textContent = `進度：${done} / ${toMigrate.length}`;
+        addLog(`  ✓ 完成 (${pct}%)`, 'done');
+
+        // 每 5 本暫停一下，避免請求過快
+        if (done % 5 === 0) await sleep(500);
+
+      } catch(e) {
+        failed++;
+        addLog(`  ✗ 失敗：${e.message}`, 'error');
+      }
+    }
+
+    addLog(`\n🎉 遷移完成！成功 ${done} 本，失敗 ${failed} 本`, 'done');
+    stat.textContent = `完成！成功 ${done} 本，失敗 ${failed} 本`;
+    btn.textContent = '完成';
+
+  } catch(e) {
+    addLog(`❌ 錯誤：${e.message}`, 'error');
+    btn.disabled = false;
+    btn.textContent = '重試';
+  }
+};
+
+async function compressBase64(base64) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const maxW = 600;
+      const scale = Math.min(1, maxW / img.width);
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.65));
+    };
+    img.src = base64;
+  });
+}
+</script>
+</body>
+</html>
