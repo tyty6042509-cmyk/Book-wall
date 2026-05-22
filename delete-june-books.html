@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>六月書牆 · 刪除工具</title>
+<style>
+  body { font-family: sans-serif; max-width: 500px; margin: 40px auto; padding: 20px; background: #f5f0eb; }
+  h2 { color: #3a3028; margin-bottom: 4px; }
+  p { color: #888; font-size: 0.85rem; margin: 0 0 20px; }
+  .book-item {
+    background: white; border-radius: 12px; padding: 14px 16px;
+    margin-bottom: 10px; display: flex; align-items: center; gap: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }
+  .book-item img { width: 44px; height: 64px; object-fit: cover; border-radius: 4px; flex-shrink: 0; background: #eee; }
+  .book-info { flex: 1; min-width: 0; }
+  .book-title { font-size: 0.9rem; font-weight: 600; color: #2a2018; }
+  .book-reader { font-size: 0.75rem; color: #999; margin-top: 2px; }
+  .book-hearts { font-size: 0.75rem; color: #e05a7a; margin-top: 2px; }
+  .del-btn {
+    background: #fee; color: #c0392b; border: 1px solid #fcc;
+    border-radius: 8px; padding: 6px 12px; font-size: 0.8rem;
+    cursor: pointer; flex-shrink: 0;
+  }
+  .del-btn:hover { background: #fdd; }
+  .del-all-btn {
+    width: 100%; background: #c0392b; color: white; border: none;
+    border-radius: 10px; padding: 14px; font-size: 1rem;
+    cursor: pointer; margin-bottom: 16px;
+  }
+  .del-all-btn:hover { background: #a93226; }
+  #status { text-align: center; color: #888; font-size: 0.85rem; padding: 20px; }
+</style>
+</head>
+<body>
+<h2>六月書牆 · 刪除工具</h2>
+<p>用完請從 GitHub 刪除此頁面</p>
+<button class="del-all-btn" onclick="deleteAll()">🗑 清空全部六月書牆</button>
+<div id="list"><div id="status">載入中...</div></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getDatabase, ref, get, remove } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+const app = initializeApp({
+  apiKey: "AIzaSyB8-o_01wWX17DFmJMKLY8cPc7pAuIL8rs",
+  authDomain: "book-wall-81a7e.firebaseapp.com",
+  databaseURL: "https://book-wall-81a7e-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "book-wall-81a7e",
+  storageBucket: "book-wall-81a7e.firebasestorage.app",
+  messagingSenderId: "294086548992",
+  appId: "1:294086548982:web:b64a54bcad483ce68b7bd7"
+});
+const db = getDatabase(app);
+
+async function load() {
+  const snap = await get(ref(db, 'bookwall/june'));
+  const data = snap.val() || {};
+  const list = document.getElementById('list');
+  const keys = Object.keys(data);
+  if (keys.length === 0) {
+    list.innerHTML = '<div id="status">目前沒有資料</div>';
+    return;
+  }
+  list.innerHTML = keys.map(k => {
+    const b = data[k];
+    const hearts = b.hearts ? '♥'.repeat(b.hearts) : '—';
+    return `<div class="book-item" id="item-${k}">
+      <img src="${b.cover || ''}" onerror="this.style.background='#eee'" alt="">
+      <div class="book-info">
+        <div class="book-title">${b.title || '（無書名）'}</div>
+        <div class="book-reader">✦ ${b.reader || '—'}</div>
+        <div class="book-hearts">${hearts}</div>
+      </div>
+      <button class="del-btn" onclick="window.deleteOne('${k}')">刪除</button>
+    </div>`;
+  }).join('');
+}
+
+window.deleteOne = async function(key) {
+  if (!confirm('確定刪除這本書？')) return;
+  await remove(ref(db, `bookwall/june/${key}`));
+  document.getElementById(`item-${key}`)?.remove();
+  const remaining = document.querySelectorAll('.book-item').length;
+  if (remaining === 0) document.getElementById('list').innerHTML = '<div id="status">已清空</div>';
+};
+
+window.deleteAll = async function() {
+  if (!confirm('確定清空全部六月書牆？此動作無法復原！')) return;
+  await remove(ref(db, 'bookwall/june'));
+  document.getElementById('list').innerHTML = '<div id="status">已清空</div>';
+};
+
+load();
+</script>
+</body>
+</html>
